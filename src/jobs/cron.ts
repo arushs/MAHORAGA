@@ -1,4 +1,5 @@
 import type { Env } from "../env.d";
+import { evaluateExpiredPredictions } from "../mc/brier";
 import { createAlpacaProviders } from "../providers/alpaca";
 import { createSECEdgarProvider } from "../providers/news/sec-edgar";
 import { createD1Client } from "../storage/d1/client";
@@ -128,7 +129,33 @@ async function runMidnightReset(env: Env): Promise<void> {
   }
 }
 
-async function runHourlyCacheRefresh(_env: Env): Promise<void> {
+async function runHourlyCacheRefresh(env: Env): Promise<void> {
   console.log("Running hourly cache refresh...");
   // TODO: Implement cache refresh for KV-cached data (movers, macro, etc.)
+
+  // Evaluate expired Brier score predictions
+  await runBrierEvaluation(env);
+}
+
+async function runBrierEvaluation(env: Env): Promise<void> {
+  console.log("Running Brier score evaluation...");
+
+  const alpaca = createAlpacaProviders(env);
+
+  try {
+    const getPrice = async (symbol: string, _timestampMs: number): Promise<number | null> => {
+      try {
+        const snapshot = await alpaca.marketData.getSnapshot(symbol);
+        return snapshot.latest_trade?.price ?? null;
+      } catch {
+        console.error(`Failed to get price for ${symbol}`);
+        return null;
+      }
+    };
+
+    const evaluated = await evaluateExpiredPredictions(env.DB, getPrice);
+    console.log(`Brier evaluation complete: ${evaluated} predictions evaluated`);
+  } catch (error) {
+    console.error("Brier evaluation error:", error);
+  }
 }
