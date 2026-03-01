@@ -2,9 +2,9 @@
  * Monte Carlo GBM path simulator with variance reduction stack.
  *
  * Variance reduction techniques (combined):
- *   1. Sobol quasi-random sequences — 2D low-discrepancy for Box-Muller pairs
+ *   1. Halton quasi-random sequences — bases 2 & 3 for 2D Box-Muller pairs
  *   2. Antithetic variates — pair each Z with -Z
- *   3. Control variates — BS call price as analytic control for digital payoff
+ *   3. Control variates — BS call payoff as analytic control for digital payoff
  *
  * GBM model: S_T = S_0 · exp((μ − σ²/2)T + σ√T · Z), drift μ = 0 (conservative).
  * Estimand: P(S_T ≥ K) — probability of reaching target price.
@@ -12,64 +12,49 @@
 
 import type { MCSimulationParams, MCSimulationResult } from "./types";
 
-// ── Sobol quasi-random (2D) ─────────────────────────────────────────────
+// ── Halton quasi-random sequence ────────────────────────────────────────
 
-/**
- * Van der Corput (base-2 bit-reversal) for dimension 0.
- * Maps n ∈ [1, 2^32) → (0, 1).
- */
-function vanDerCorput(n: number): number {
-  n = ((n >>> 1) & 0x55555555) | ((n & 0x55555555) << 1);
-  n = ((n >>> 2) & 0x33333333) | ((n & 0x33333333) << 2);
-  n = ((n >>> 4) & 0x0f0f0f0f) | ((n & 0x0f0f0f0f) << 4);
-  n = ((n >>> 8) & 0x00ff00ff) | ((n & 0x00ff00ff) << 8);
-  n = (n >>> 16) | (n << 16);
-  return (n >>> 0) / 4294967296 + 5e-11;
-}
-
-/** Sobol direction numbers for dimension 1 (primitive polynomial x+1, degree 1). */
-const DIR1: number[] = new Array(32);
-for (let i = 0; i < 32; i++) DIR1[i] = 1 << (31 - i);
-
-/** Gray-code Sobol generator for dimension 1. */
-class SobolDim1 {
-  private x = 0;
-  private idx = 0;
-  next(): number {
-    if (this.idx === 0) { this.idx++; return 0.5; }
-    let c = 0;
-    let v = this.idx;
-    while ((v & 1) === 0) { v >>>= 1; c++; }
-    this.x ^= DIR1[c]!;
-    this.idx++;
-    return (this.x >>> 0) / 4294967296 + 5e-11;
+/** Halton sequence value for index n in given base. Returns value in (0, 1). */
+function halton(n: number, base: number): number {
+  let result = 0;
+  let f = 1 / base;
+  let i = n;
+  while (i > 0) {
+    result += f * (i % base);
+    i = Math.floor(i / base);
+    f /= base;
   }
+  return result || 5e-11; // avoid exact 0
 }
 
 // ── Box-Muller ──────────────────────────────────────────────────────────
 
 function boxMuller(u1: number, u2: number): [number, number] {
-  const r = Math.sqrt(-2 * Math.log(u1));
-  const theta = 2 * Math.PI * u2;
+  // Clamp away from 0 and 1 for numerical safety
+  const cu1 = Math.max(1e-10, Math.min(1 - 1e-10, u1));
+  const cu2 = Math.max(1e-10, Math.min(1 - 1e-10, u2));
+  const r = Math.sqrt(-2 * Math.log(cu1));
+  const theta = 2 * Math.PI * cu2;
   return [r * Math.cos(theta), r * Math.sin(theta)];
 }
 
 // ── Black-Scholes analytics ─────────────────────────────────────────────
 
-/** Standard normal CDF (Abramowitz & Stegun, |ε| < 7.5e-8). */
+/** Standard normal CDF via erf approximation (Abramowitz & Stegun 7.1.26, |ε| < 1.5e-7). */
 function normalCDF(x: number): number {
   if (x > 8) return 1;
   if (x < -8) return 0;
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
   const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
   const sign = x < 0 ? -1 : 1;
-  const t = 1 / (1 + p * Math.abs(x));
-  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+  const ax = Math.abs(x) / Math.SQRT2; // erf argument
+  const t = 1 / (1 + p * ax);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);
   return 0.5 * (1 + sign * y);
 }
 
-/** BS digital call: P(S_T ≥ K) = N(d2) under real-world measure (r=drift). */
-export function bsDigitalProb(S: number, K: number, vol: number, T: number, mu = 0): number {
+/** BS digital call: P(S_T ≥ K) = N(d2) under real-world measure (μ = drift). */
+function bsDigitalProb(S: number, K: number, vol: number, T: number, mu = 0): number {
   if (T <= 0) return S >= K ? 1 : 0;
   if (vol <= 0) return S * Math.exp(mu * T) >= K ? 1 : 0;
   const sqrtT = Math.sqrt(T);
@@ -77,7 +62,7 @@ export function bsDigitalProb(S: number, K: number, vol: number, T: number, mu =
   return normalCDF(d2);
 }
 
-/** BS vanilla call price: E[max(S_T - K, 0)] under real-world measure. */
+/** BS call expected value: E[max(S_T - K, 0)] under real-world measure. */
 function bsCallExpected(S: number, K: number, vol: number, T: number, mu = 0): number {
   if (T <= 0) return Math.max(0, S - K);
   if (vol <= 0) return Math.max(0, S * Math.exp(mu * T) - K);
@@ -92,9 +77,8 @@ function bsCallExpected(S: number, K: number, vol: number, T: number, mu = 0): n
 /**
  * Run Monte Carlo simulation estimating P(S_T ≥ targetPrice).
  *
- * Control variate: use continuous call payoff max(S_T - K, 0) as control.
- * Its analytic expectation is the BS call formula. The digital payoff (our target)
- * is highly correlated with it, giving substantial variance reduction.
+ * Control variate: continuous call payoff max(S_T - K, 0) — its analytic
+ * expectation is the BS call formula. Highly correlated with digital payoff.
  */
 export function runSimulation(
   params: MCSimulationParams,
@@ -123,43 +107,39 @@ export function runSimulation(
   const t0 = performance.now();
 
   const T = horizonMs / (365.25 * 24 * 3600_000); // ms → years
-  const mu = 0; // conservative drift
-  const sqrtT = Math.sqrt(T);
+  const mu = 0;
   const driftTerm = (mu - 0.5 * vol * vol) * T;
-  const volSqrtT = vol * sqrtT;
+  const volSqrtT = vol * Math.sqrt(T);
 
-  // Analytic control expectations
-  const Ec = bsCallExpected(S0, K, vol, T, mu); // E[max(S_T - K, 0)]
+  // Analytic expectation for control variate (BS call price)
+  const EcCall = bsCallExpected(S0, K, vol, T, mu);
 
-  // Each Sobol point → 2 normals via Box-Muller, × 2 antithetic = 4 paths
-  const nSobol = Math.max(1, Math.ceil(requestedPaths / 4));
-  const N = nSobol * 4;
+  // Each Halton point → 2 normals (Box-Muller) × 2 antithetic = 4 paths
+  const nHalton = Math.max(1, Math.ceil(requestedPaths / 4));
+  const N = nHalton * 4;
 
-  const sobol1 = new SobolDim1();
+  // Accumulators for control variate regression
+  // Y = digital payoff, C = call payoff
+  let sumY = 0, sumC = 0;
+  let sumYY = 0, sumCC = 0, sumYC = 0;
 
-  // Accumulators (Welford-style would be more stable but for N≤100K this is fine)
-  let sumY = 0;  // digital payoff
-  let sumC = 0;  // call payoff (control)
-  let sumYY = 0;
-  let sumCC = 0;
-  let sumYC = 0;
-
-  for (let i = 0; i < nSobol; i++) {
-    const u1 = vanDerCorput(i + 1);
-    const u2 = sobol1.next();
+  for (let i = 0; i < nHalton; i++) {
+    const u1 = halton(i + 1, 2);
+    const u2 = halton(i + 1, 3);
     const [z1, z2] = boxMuller(u1, u2);
 
     // 4 paths: z1, z2, -z1, -z2
+    const normals = [z1, z2, -z1, -z2];
     for (let j = 0; j < 4; j++) {
-      const z = j === 0 ? z1 : j === 1 ? z2 : j === 2 ? -z1 : -z2;
+      const z = normals[j]!;
       const ST = S0 * Math.exp(driftTerm + volSqrtT * z);
 
-      const y = ST >= K ? 1 : 0;         // digital (target estimand)
-      const c = Math.max(0, ST - K);     // vanilla call (control)
+      const y = ST >= K ? 1 : 0;
+      const c = Math.max(0, ST - K);
 
       sumY += y;
       sumC += c;
-      sumYY += y * y; // y² = y for binary
+      sumYY += y; // y² = y for binary
       sumCC += c * c;
       sumYC += y * c;
     }
@@ -167,29 +147,26 @@ export function runSimulation(
 
   const meanY = sumY / N;
   const meanC = sumC / N;
-
-  // Optimal beta = Cov(Y,C) / Var(C)
+  const varY = sumYY / N - meanY * meanY;
   const varC = sumCC / N - meanC * meanC;
   const covYC = sumYC / N - meanY * meanC;
-  const varY = sumYY / N - meanY * meanY;
 
   let probability: number;
   let estimateVar: number;
 
   if (varC > 1e-20 && varY > 1e-20) {
     const beta = covYC / varC;
-    probability = meanY - beta * (meanC - Ec);
+    probability = meanY - beta * (meanC - EcCall);
 
-    // Var(Y_cv) = Var(Y)(1 - ρ²) / N
-    const rho2 = Math.min(1, (covYC * covYC) / (varY * varC));
+    const rho2 = Math.min(0.9999, (covYC * covYC) / (varY * varC));
     estimateVar = varY * (1 - rho2) / N;
   } else {
-    probability = meanY;
+    // Edge case: all paths hit or all miss → use analytic
+    probability = varY < 1e-20 ? meanY : meanY;
     estimateVar = varY / N;
   }
 
   probability = Math.max(0, Math.min(1, probability));
-
   const se = Math.sqrt(Math.max(0, estimateVar));
   const hw = 1.96 * se;
 
@@ -203,3 +180,6 @@ export function runSimulation(
     computeTimeMs: performance.now() - t0,
   };
 }
+
+// Exported for testing
+export { bsDigitalProb, bsCallExpected, normalCDF };
