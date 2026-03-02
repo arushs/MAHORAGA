@@ -27,6 +27,7 @@ import type { Account, LLMProvider, MarketClock, Position } from "../providers/t
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { createD1Client } from "../storage/d1/client";
+import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { activeStrategy } from "../strategy";
 import { DEFAULT_STATE } from "../strategy/default/config";
 import {
@@ -248,6 +249,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Positions snapshot
       const positions = await ctx.broker.getPositions();
+
+      // Update particle filters for each position
+      this.updateParticleFilters(positions, now);
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
@@ -1136,6 +1140,90 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Update particle filters for all held positions.
+   * Initializes new filters for new positions, prunes filters for closed positions.
+   */
+  private updateParticleFilters(positions: import("../providers/types").Position[], nowMs: number): void {
+    const heldSymbols = new Set(positions.map(p => p.symbol));
+
+    // Prune filters for positions no longer held
+    for (const symbol of Object.keys(this.state.particleFilterStates)) {
+      if (!heldSymbols.has(symbol)) {
+        delete this.state.particleFilterStates[symbol];
+      }
+    }
+
+    // Update or initialize filters for current positions
+    for (const pos of positions) {
+      const existing = this.state.particleFilterStates[pos.symbol];
+      if (!existing) {
+        // Initialize new filter
+        this.state.particleFilterStates[pos.symbol] = initFilter(pos.current_price, nowMs);
+      } else {
+        // Step the filter with new observation
+        this.state.particleFilterStates[pos.symbol] = filterStep(
+          existing,
+          pos.current_price,
+          nowMs,
+        );
+      }
+    }
+  }
+
+  /**
+   * Serialize particle filter estimates for the status API.
+   * Pre-computes P(profitable) at 1h, 4h, 1d horizons with 90% credible intervals.
+   */
+  private getParticleEstimates(positions: import("../providers/types").Position[]): Record<string, {
+    priceEstimate: number;
+    volEstimate: number;
+    driftEstimate: number;
+    ess: number;
+    priceCI95: [number, number];
+    priceCI90: [number, number];
+    probProfitable1h: number;
+    probProfitable4h: number;
+    probProfitable1d: number;
+    stepCount: number;
+  }> {
+    const result: Record<string, any> = {};
+    for (const pos of positions) {
+      const state = this.state.particleFilterStates[pos.symbol];
+      if (!state || state.stepCount < 2) continue;
+
+      const est = getEstimate(state);
+      const entryPrice = this.state.positionEntries[pos.symbol]?.entry_price || pos.current_price;
+
+      // Compute 90% CI from particles
+      const sorted = [...state.particles].sort((a, b) => a.logPrice - b.logPrice);
+      let cumW = 0;
+      let lo90 = sorted[0]!.logPrice;
+      let hi90 = sorted[sorted.length - 1]!.logPrice;
+      let foundLo = false, foundHi = false;
+      for (const p of sorted) {
+        cumW += p.weight;
+        if (!foundLo && cumW >= 0.05) { lo90 = p.logPrice; foundLo = true; }
+        if (!foundHi && cumW >= 0.95) { hi90 = p.logPrice; foundHi = true; }
+      }
+
+      const HOUR_MS = 3600_000;
+      result[pos.symbol] = {
+        priceEstimate: est.priceEstimate,
+        volEstimate: est.volEstimate,
+        driftEstimate: est.driftEstimate,
+        ess: est.ess,
+        priceCI95: est.priceCI95,
+        priceCI90: [Math.exp(lo90), Math.exp(hi90)] as [number, number],
+        probProfitable1h: est.probAbove(entryPrice, HOUR_MS),
+        probProfitable4h: est.probAbove(entryPrice, 4 * HOUR_MS),
+        probProfitable1d: est.probAbove(entryPrice, 24 * HOUR_MS),
+        stepCount: state.stepCount,
+      };
+    }
+    return result;
+  }
+
   private async handleStatus(): Promise<Response> {
     const alpaca = createAlpacaProviders(this.env);
 
@@ -1182,6 +1270,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         twitterConfirmations: this.state.twitterConfirmations,
         premarketPlan: this.state.premarketPlan,
         stalenessAnalysis: this.state.stalenessAnalysis,
+        particleEstimates: this.getParticleEstimates(positions),
       },
     });
   }

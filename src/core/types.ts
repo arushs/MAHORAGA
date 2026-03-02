@@ -158,4 +158,6 @@ export interface AgentState {
   lastPremarketPlanDayEt: string | null;
   lastClockIsOpen: boolean | null;
   enabled: boolean;
+  /** Serialized particle filter states per symbol */
+  particleFilterStates: Record<string, import("../mc/particle-filter").ParticleFilterState>;
 }
