@@ -116,5 +116,5 @@ export const DEFAULT_STATE: AgentState = {
   lastPremarketPlanDayEt: null,
   lastClockIsOpen: null,
   enabled: false,
-  particleFilterStates: {},
+  particleFilters: {},
 };

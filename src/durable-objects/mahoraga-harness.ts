@@ -26,6 +26,7 @@ import { createLLMProvider } from "../providers/llm/factory";
 import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
+import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { createD1Client } from "../storage/d1/client";
 import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { activeStrategy } from "../strategy";
@@ -251,7 +252,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       const positions = await ctx.broker.getPositions();
 
       // Update particle filters for each position
-      this.updateParticleFilters(positions, now);
+      this.updateParticleFilters(positions);
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
@@ -1092,6 +1093,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       "signals",
       "history",
       "setup/status",
+      "particle-filter",
     ];
     if (protectedActions.includes(action)) {
       if (!this.isAuthorized(request)) return this.unauthorizedResponse();
@@ -1121,6 +1123,8 @@ export class MahoragaHarness extends DurableObject<Env> {
         case "trigger":
           await this.alarm();
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
+        case "particle-filter":
+          return this.handleParticleFilter();
         case "kill":
           if (!this.isKillSwitchAuthorized(request)) {
             return new Response(
@@ -1142,54 +1146,42 @@ export class MahoragaHarness extends DurableObject<Env> {
 
   /**
    * Update particle filters for all held positions.
-   * Initializes new filters for new positions, prunes filters for closed positions.
+   * Initializes filters for new positions, removes filters for closed positions.
    */
-  private updateParticleFilters(positions: import("../providers/types").Position[], nowMs: number): void {
-    const heldSymbols = new Set(positions.map(p => p.symbol));
+  private updateParticleFilters(positions: Position[]): void {
+    const now = Date.now();
+    const heldSymbols = new Set(positions.map((p) => p.symbol));
 
-    // Prune filters for positions no longer held
-    for (const symbol of Object.keys(this.state.particleFilterStates)) {
-      if (!heldSymbols.has(symbol)) {
-        delete this.state.particleFilterStates[symbol];
+    // Initialize filters for new positions
+    for (const pos of positions) {
+      if (!this.state.particleFilters[pos.symbol]) {
+        this.state.particleFilters[pos.symbol] = initFilter(pos.current_price, now);
+      } else {
+        // Step the filter with the latest price observation
+        this.state.particleFilters[pos.symbol] = filterStep(
+          this.state.particleFilters[pos.symbol]!,
+          pos.current_price,
+          now,
+        );
       }
     }
 
-    // Update or initialize filters for current positions
-    for (const pos of positions) {
-      const existing = this.state.particleFilterStates[pos.symbol];
-      if (!existing) {
-        // Initialize new filter
-        this.state.particleFilterStates[pos.symbol] = initFilter(pos.current_price, nowMs);
-      } else {
-        // Step the filter with new observation
-        this.state.particleFilterStates[pos.symbol] = filterStep(
-          existing,
-          pos.current_price,
-          nowMs,
-        );
+    // Clean up filters for positions no longer held
+    for (const symbol of Object.keys(this.state.particleFilters)) {
+      if (!heldSymbols.has(symbol)) {
+        delete this.state.particleFilters[symbol];
       }
     }
   }
 
   /**
-   * Serialize particle filter estimates for the status API.
+   * Compute particle filter estimates for all positions.
    * Pre-computes P(profitable) at 1h, 4h, 1d horizons with 90% credible intervals.
    */
-  private getParticleEstimates(positions: import("../providers/types").Position[]): Record<string, {
-    priceEstimate: number;
-    volEstimate: number;
-    driftEstimate: number;
-    ess: number;
-    priceCI95: [number, number];
-    priceCI90: [number, number];
-    probProfitable1h: number;
-    probProfitable4h: number;
-    probProfitable1d: number;
-    stepCount: number;
-  }> {
+  private getParticleEstimates(positions: Position[]): Record<string, any> {
     const result: Record<string, any> = {};
     for (const pos of positions) {
-      const state = this.state.particleFilterStates[pos.symbol];
+      const state = this.state.particleFilters[pos.symbol];
       if (!state || state.stepCount < 2) continue;
 
       const est = getEstimate(state);
@@ -1209,6 +1201,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       const HOUR_MS = 3600_000;
       result[pos.symbol] = {
+        symbol: pos.symbol,
         priceEstimate: est.priceEstimate,
         volEstimate: est.volEstimate,
         driftEstimate: est.driftEstimate,
@@ -1219,9 +1212,56 @@ export class MahoragaHarness extends DurableObject<Env> {
         probProfitable4h: est.probAbove(entryPrice, 4 * HOUR_MS),
         probProfitable1d: est.probAbove(entryPrice, 24 * HOUR_MS),
         stepCount: state.stepCount,
+        lastUpdateMs: state.lastUpdateMs,
       };
     }
     return result;
+  }
+
+  /**
+   * Return particle filter estimates via dedicated endpoint.
+   */
+  private handleParticleFilter(): Response {
+    const positions = Object.keys(this.state.particleFilters).map(symbol => ({
+      symbol,
+      current_price: 0, // not needed for estimate computation
+    })) as Position[];
+    // Re-use getParticleEstimates but we need actual positions for entry price lookup
+    // For the dedicated endpoint, just iterate directly
+    const estimates: Record<string, any> = {};
+    for (const [symbol, state] of Object.entries(this.state.particleFilters)) {
+      if (!state || state.stepCount < 2) continue;
+      const est = getEstimate(state);
+      const entryPrice = this.state.positionEntries[symbol]?.entry_price || est.priceEstimate;
+
+      const sorted = [...state.particles].sort((a, b) => a.logPrice - b.logPrice);
+      let cumW = 0;
+      let lo90 = sorted[0]!.logPrice;
+      let hi90 = sorted[sorted.length - 1]!.logPrice;
+      let foundLo = false, foundHi = false;
+      for (const p of sorted) {
+        cumW += p.weight;
+        if (!foundLo && cumW >= 0.05) { lo90 = p.logPrice; foundLo = true; }
+        if (!foundHi && cumW >= 0.95) { hi90 = p.logPrice; foundHi = true; }
+      }
+
+      const HOUR_MS = 3600_000;
+      estimates[symbol] = {
+        symbol,
+        priceEstimate: est.priceEstimate,
+        volEstimate: est.volEstimate,
+        driftEstimate: est.driftEstimate,
+        ess: est.ess,
+        priceCI95: est.priceCI95,
+        priceCI90: [Math.exp(lo90), Math.exp(hi90)],
+        probProfitable1h: est.probAbove(entryPrice, HOUR_MS),
+        probProfitable4h: est.probAbove(entryPrice, 4 * HOUR_MS),
+        probProfitable1d: est.probAbove(entryPrice, 24 * HOUR_MS),
+        stepCount: state.stepCount,
+        lastUpdateMs: state.lastUpdateMs,
+      };
+    }
+    return this.jsonResponse({ ok: true, data: estimates });
   }
 
   private async handleStatus(): Promise<Response> {

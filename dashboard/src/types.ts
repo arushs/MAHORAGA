@@ -202,7 +202,10 @@ export interface ParticleEstimate {
   probProfitable4h: number
   probProfitable1d: number
   stepCount: number
+  lastUpdateMs: number
 }
+
+export type ParticleFilterEstimate = ParticleEstimate
 
 export interface Status {
   enabled: boolean
