@@ -42,7 +42,7 @@ export {
 export {
   runStressTest,
   SCENARIOS,
-  type PortfolioPosition,
+  type PortfolioPosition as StressTestPosition,
   type ScenarioConfig,
   type ScenarioResult,
   type StressTestResult,
@@ -55,3 +55,43 @@ export {
   type KillAction,
   type KillSwitchResult,
 } from './kill-switch';
+
+// Phase 4: Portfolio-Level Risk Management
+export {
+  computeCorrelationMatrix,
+  updateCorrelationState,
+  createEmptyCorrelationState,
+  getPairwiseCorrelation,
+  extractSubMatrix,
+  weightedCorrelation,
+  barsToLogReturns,
+  type CorrelationMatrix,
+  type ReturnSeries,
+  type CorrelationEstimatorState,
+} from './correlation';
+
+export {
+  simulateCopula,
+  simulateCopulaFlat,
+  cholesky,
+  type CopulaConfig,
+  type CopulaResult,
+} from './copula';
+
+export {
+  computePortfolioVaR,
+  evaluatePortfolioRisk,
+  type PortfolioPosition,
+  type VaRResult,
+  type PortfolioRiskDecision,
+  type PortfolioRiskConfig,
+} from './portfolio-var';
+
+export {
+  computeKelly,
+  kellyFromFilterEstimate,
+  batchKelly,
+  type KellyInput,
+  type KellyConfig,
+  type KellyResult,
+} from './kelly';
