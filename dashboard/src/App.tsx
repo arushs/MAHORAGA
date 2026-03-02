@@ -86,6 +86,22 @@ function formatCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): strin
   return symbol
 }
 
+function getProbColor(prob: number): string {
+  if (prob >= 0.65) return 'text-hud-success'
+  if (prob >= 0.45) return 'text-hud-warning'
+  return 'text-hud-error'
+}
+
+function getProbBgColor(prob: number): string {
+  if (prob >= 0.65) return 'bg-hud-success/10'
+  if (prob >= 0.45) return 'bg-hud-warning/10'
+  return 'bg-hud-error/10'
+}
+
+function formatProb(prob: number): string {
+  return `${(prob * 100).toFixed(0)}%`
+}
+
 function getVerdictColor(verdict: string): string {
   if (verdict === 'BUY') return 'text-hud-success'
   if (verdict === 'SKIP') return 'text-hud-error'
@@ -256,6 +272,7 @@ export default function App() {
   const signals = status?.signals || []
   const logs = status?.logs || []
   const costs = status?.costs || { total_usd: 0, calls: 0, tokens_in: 0, tokens_out: 0 }
+  const particleEstimates = status?.particleEstimates || {}
   const config = status?.config
   const isMarketOpen = status?.clock?.is_open ?? false
 
@@ -491,6 +508,7 @@ export default function App() {
                         <th className="hud-label text-right py-2 px-2 hidden sm:table-cell">Qty</th>
                         <th className="hud-label text-right py-2 px-2 hidden md:table-cell">Value</th>
                         <th className="hud-label text-right py-2 px-2">P&L</th>
+                        <th className="hud-label text-center py-2 px-2 hidden lg:table-cell">P(Win)</th>
                         <th className="hud-label text-center py-2 px-2">Trend</th>
                       </tr>
                     </thead>
@@ -550,6 +568,78 @@ export default function App() {
                             )}>
                               <div>{formatCurrency(pos.unrealized_pl)}</div>
                               <div className="text-xs opacity-70">{formatPercent(plPct)}</div>
+                            </td>
+                            <td className="py-2 px-2 hidden lg:table-cell">
+                              {(() => {
+                                const pe = particleEstimates[pos.symbol]
+                                if (!pe || pe.stepCount < 3) return (
+                                  <div className="text-center">
+                                    <span className="hud-label text-hud-text-dim">—</span>
+                                  </div>
+                                )
+                                return (
+                                  <Tooltip
+                                    position="left"
+                                    content={
+                                      <div className="space-y-2 min-w-[220px]">
+                                        <div className="hud-label text-hud-primary border-b border-hud-line/50 pb-1">
+                                          {pos.symbol} PARTICLE FILTER
+                                        </div>
+                                        <div className="space-y-1">
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">P(Profit) 1h</span>
+                                            <span className={getProbColor(pe.probProfitable1h)}>{formatProb(pe.probProfitable1h)}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">P(Profit) 4h</span>
+                                            <span className={getProbColor(pe.probProfitable4h)}>{formatProb(pe.probProfitable4h)}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">P(Profit) 1d</span>
+                                            <span className={getProbColor(pe.probProfitable1d)}>{formatProb(pe.probProfitable1d)}</span>
+                                          </div>
+                                        </div>
+                                        <div className="pt-1 border-t border-hud-line/30 space-y-1">
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">Price Est.</span>
+                                            <span className="text-hud-text-bright">{formatCurrency(pe.priceEstimate)}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">90% CI</span>
+                                            <span className="text-hud-text">{formatCurrency(pe.priceCI90[0])} – {formatCurrency(pe.priceCI90[1])}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">Vol (ann.)</span>
+                                            <span className="text-hud-text">{(pe.volEstimate * 100).toFixed(1)}%</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">Drift (ann.)</span>
+                                            <span className={pe.driftEstimate >= 0 ? 'text-hud-success' : 'text-hud-error'}>
+                                              {pe.driftEstimate >= 0 ? '+' : ''}{(pe.driftEstimate * 100).toFixed(1)}%
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">ESS</span>
+                                            <span className="text-hud-text">{pe.ess.toFixed(0)}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-hud-text-dim">Observations</span>
+                                            <span className="text-hud-text">{pe.stepCount}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    }
+                                  >
+                                    <div className={clsx(
+                                      'text-center cursor-help px-1.5 py-0.5 rounded text-xs font-mono',
+                                      getProbBgColor(pe.probProfitable1d),
+                                      getProbColor(pe.probProfitable1d)
+                                    )}>
+                                      {formatProb(pe.probProfitable1d)}
+                                    </div>
+                                  </Tooltip>
+                                )
+                              })()}
                             </td>
                             <td className="py-2 px-2">
                               <div className="flex justify-center">

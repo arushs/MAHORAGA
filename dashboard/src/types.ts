@@ -191,17 +191,21 @@ export interface PositionHistory {
   timestamps: number[]
 }
 
-export interface ParticleFilterEstimate {
-  symbol: string
+export interface ParticleEstimate {
   priceEstimate: number
   volEstimate: number
   driftEstimate: number
   ess: number
-  priceCI90: [number, number]
   priceCI95: [number, number]
+  priceCI90: [number, number]
+  probProfitable1h: number
+  probProfitable4h: number
+  probProfitable1d: number
   stepCount: number
   lastUpdateMs: number
 }
+
+export type ParticleFilterEstimate = ParticleEstimate
 
 export interface Status {
   enabled: boolean
@@ -223,4 +227,5 @@ export interface Status {
   premarketPlan?: PremarketPlan | null
   stalenessAnalysis?: Record<string, StalenessAnalysis>
   overnightActivity?: OvernightActivity
+  particleEstimates?: Record<string, ParticleEstimate>
 }
