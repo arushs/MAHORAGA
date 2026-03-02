@@ -10,6 +10,7 @@ import { LineChart, Sparkline } from './components/LineChart'
 import { NotificationBell } from './components/NotificationBell'
 import { Tooltip, TooltipContent } from './components/Tooltip'
 import { ParticleFilterPanel } from './components/ParticleFilterPanel'
+import { CorrelationHeatmap } from './components/CorrelationHeatmap'
 import type { Status, Config, LogEntry, Signal, Position, SignalResearch, PortfolioSnapshot, ParticleFilterEstimate } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
@@ -659,6 +660,13 @@ export default function App() {
           {Object.keys(particleFilterEstimates).length > 0 && (
             <div className="col-span-4 md:col-span-8 lg:col-span-12">
               <ParticleFilterPanel estimates={particleFilterEstimates} />
+            </div>
+          )}
+
+          {/* Correlation Heatmap */}
+          {positions.length >= 2 && (
+            <div className="col-span-4 md:col-span-8 lg:col-span-12">
+              <CorrelationHeatmap positions={positions} />
             </div>
           )}
 
