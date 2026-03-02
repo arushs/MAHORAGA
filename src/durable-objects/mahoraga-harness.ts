@@ -28,7 +28,6 @@ import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
 import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { createD1Client } from "../storage/d1/client";
-import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { activeStrategy } from "../strategy";
 import { DEFAULT_STATE } from "../strategy/default/config";
 import {
@@ -1222,12 +1221,7 @@ export class MahoragaHarness extends DurableObject<Env> {
    * Return particle filter estimates via dedicated endpoint.
    */
   private handleParticleFilter(): Response {
-    const positions = Object.keys(this.state.particleFilters).map(symbol => ({
-      symbol,
-      current_price: 0, // not needed for estimate computation
-    })) as Position[];
-    // Re-use getParticleEstimates but we need actual positions for entry price lookup
-    // For the dedicated endpoint, just iterate directly
+    // Iterate particle filter states directly for the dedicated endpoint
     const estimates: Record<string, any> = {};
     for (const [symbol, state] of Object.entries(this.state.particleFilters)) {
       if (!state || state.stepCount < 2) continue;
