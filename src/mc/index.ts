@@ -95,3 +95,57 @@ export {
   type KellyConfig,
   type KellyResult,
 } from './kelly';
+
+export {
+  runABM,
+  estimateSlippage,
+  type ABMConfig,
+  type ABMResult,
+  type SlippageEstimate,
+  type OrderBook,
+} from './abm';
+
+export {
+  optimizeExecution,
+  type ExecutionRequest,
+  type ExecutionPlan,
+  type ExecutionSlice,
+  type ExecutionStrategy,
+} from './execution';
+
+export {
+  createEnsembleState,
+  registerModel,
+  updateEnsemble,
+  ensemblePredict,
+  saveEnsembleState,
+  loadEnsembleState,
+  getEnsembleSummary,
+  type EnsembleState,
+  type EnsembleConfig,
+  type EnsemblePrediction,
+  type ModelPrediction,
+  type ModelState,
+} from './ensemble';
+
+export {
+  attributePnL,
+  computeDrift,
+  checkCalibration,
+  saveMonitoringSnapshot,
+  getRecentSnapshots,
+  loadPredictionHistory,
+  type PnLAttribution,
+  type PnLInput,
+  type DriftMetrics,
+  type DriftConfig,
+  type CalibrationAlert,
+  type MonitoringSnapshot,
+} from './monitoring';
+
+export {
+  runLoadTest,
+  saveLoadTestReport,
+  type LoadTestReport,
+  type BenchmarkResult,
+} from './loadtest';
