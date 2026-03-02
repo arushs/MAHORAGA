@@ -191,6 +191,18 @@ export interface PositionHistory {
   timestamps: number[]
 }
 
+export interface ParticleFilterEstimate {
+  symbol: string
+  priceEstimate: number
+  volEstimate: number
+  driftEstimate: number
+  ess: number
+  priceCI90: [number, number]
+  priceCI95: [number, number]
+  stepCount: number
+  lastUpdateMs: number
+}
+
 export interface Status {
   enabled: boolean
   account: Account | null

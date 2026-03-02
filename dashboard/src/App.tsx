@@ -9,7 +9,8 @@ import { SetupWizard } from './components/SetupWizard'
 import { LineChart, Sparkline } from './components/LineChart'
 import { NotificationBell } from './components/NotificationBell'
 import { Tooltip, TooltipContent } from './components/Tooltip'
-import type { Status, Config, LogEntry, Signal, Position, SignalResearch, PortfolioSnapshot } from './types'
+import { ParticleFilterPanel } from './components/ParticleFilterPanel'
+import type { Status, Config, LogEntry, Signal, Position, SignalResearch, PortfolioSnapshot, ParticleFilterEstimate } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
@@ -145,6 +146,7 @@ export default function App() {
   const [portfolioHistory, setPortfolioHistory] = useState<PortfolioSnapshot[]>([])
   const [portfolioPeriod, setPortfolioPeriod] = useState<'1D' | '1W' | '1M'>('1D')
   const [toggling, setToggling] = useState(false)
+  const [particleFilterEstimates, setParticleFilterEstimates] = useState<Record<string, ParticleFilterEstimate>>({})
 
   const handleToggleAgent = async () => {
     if (!status || toggling) return
@@ -195,13 +197,28 @@ export default function App() {
       }
     }
 
+    const fetchParticleFilter = async () => {
+      try {
+        const res = await authFetch(`${API_BASE}/particle-filter`)
+        const data = await res.json()
+        if (data.ok) {
+          setParticleFilterEstimates(data.data)
+        }
+      } catch {
+        // Silently ignore - particle filter is optional
+      }
+    }
+
     if (setupChecked && !showSetup) {
       fetchStatus()
+      fetchParticleFilter()
       const interval = setInterval(fetchStatus, 5000)
+      const pfInterval = setInterval(fetchParticleFilter, 10000)
       const timeInterval = setInterval(() => setTime(new Date()), 1000)
 
       return () => {
         clearInterval(interval)
+        clearInterval(pfInterval)
         clearInterval(timeInterval)
       }
     }
@@ -548,6 +565,12 @@ export default function App() {
               )}
             </Panel>
           </div>
+
+          {Object.keys(particleFilterEstimates).length > 0 && (
+            <div className="col-span-4 md:col-span-8 lg:col-span-12">
+              <ParticleFilterPanel estimates={particleFilterEstimates} />
+            </div>
+          )}
 
           <div className="col-span-4 md:col-span-8 lg:col-span-4">
             <Panel title="LLM COSTS" className="h-full">

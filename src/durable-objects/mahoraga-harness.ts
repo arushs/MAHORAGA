@@ -26,6 +26,7 @@ import { createLLMProvider } from "../providers/llm/factory";
 import type { Account, LLMProvider, MarketClock, Position } from "../providers/types";
 import type { AgentConfig } from "../schemas/agent-config";
 import { safeValidateAgentConfig } from "../schemas/agent-config";
+import { initFilter, filterStep, getEstimate } from "../mc/particle-filter";
 import { createD1Client } from "../storage/d1/client";
 import { activeStrategy } from "../strategy";
 import { DEFAULT_STATE } from "../strategy/default/config";
@@ -248,6 +249,9 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       // Positions snapshot
       const positions = await ctx.broker.getPositions();
+
+      // Update particle filters for each position
+      this.updateParticleFilters(positions);
 
       // Crypto trading (24/7)
       if (this.state.config.crypto_enabled) {
@@ -1088,6 +1092,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       "signals",
       "history",
       "setup/status",
+      "particle-filter",
     ];
     if (protectedActions.includes(action)) {
       if (!this.isAuthorized(request)) return this.unauthorizedResponse();
@@ -1117,6 +1122,8 @@ export class MahoragaHarness extends DurableObject<Env> {
         case "trigger":
           await this.alarm();
           return this.jsonResponse({ ok: true, message: "Alarm triggered" });
+        case "particle-filter":
+          return this.handleParticleFilter();
         case "kill":
           if (!this.isKillSwitchAuthorized(request)) {
             return new Response(
@@ -1134,6 +1141,86 @@ export class MahoragaHarness extends DurableObject<Env> {
         headers: { "Content-Type": "application/json" },
       });
     }
+  }
+
+  /**
+   * Update particle filters for all held positions.
+   * Initializes filters for new positions, removes filters for closed positions.
+   */
+  private updateParticleFilters(positions: Position[]): void {
+    const now = Date.now();
+    const heldSymbols = new Set(positions.map((p) => p.symbol));
+
+    // Initialize filters for new positions
+    for (const pos of positions) {
+      if (!this.state.particleFilters[pos.symbol]) {
+        this.state.particleFilters[pos.symbol] = initFilter(pos.current_price, now);
+      } else {
+        // Step the filter with the latest price observation
+        this.state.particleFilters[pos.symbol] = filterStep(
+          this.state.particleFilters[pos.symbol]!,
+          pos.current_price,
+          now,
+        );
+      }
+    }
+
+    // Clean up filters for positions no longer held
+    for (const symbol of Object.keys(this.state.particleFilters)) {
+      if (!heldSymbols.has(symbol)) {
+        delete this.state.particleFilters[symbol];
+      }
+    }
+  }
+
+  /**
+   * Return particle filter estimates for all positions.
+   * Includes probability estimate, 90% CI, volatility, drift, and ESS per symbol.
+   */
+  private handleParticleFilter(): Response {
+    const estimates: Record<string, {
+      symbol: string;
+      priceEstimate: number;
+      volEstimate: number;
+      driftEstimate: number;
+      ess: number;
+      priceCI90: [number, number];
+      priceCI95: [number, number];
+      stepCount: number;
+      lastUpdateMs: number;
+    }> = {};
+
+    for (const [symbol, state] of Object.entries(this.state.particleFilters)) {
+      if (!state) continue;
+      const est = getEstimate(state);
+
+      // Compute 90% CI (5th and 95th percentiles)
+      const sorted = [...state.particles].sort((a, b) => a.logPrice - b.logPrice);
+      let cumW = 0;
+      let lo90 = sorted[0]!.logPrice;
+      let hi90 = sorted[sorted.length - 1]!.logPrice;
+      let foundLo = false;
+      let foundHi = false;
+      for (const p of sorted) {
+        cumW += p.weight;
+        if (!foundLo && cumW >= 0.05) { lo90 = p.logPrice; foundLo = true; }
+        if (!foundHi && cumW >= 0.95) { hi90 = p.logPrice; foundHi = true; }
+      }
+
+      estimates[symbol] = {
+        symbol,
+        priceEstimate: est.priceEstimate,
+        volEstimate: est.volEstimate,
+        driftEstimate: est.driftEstimate,
+        ess: est.ess,
+        priceCI90: [Math.exp(lo90), Math.exp(hi90)],
+        priceCI95: est.priceCI95,
+        stepCount: state.stepCount,
+        lastUpdateMs: state.lastUpdateMs,
+      };
+    }
+
+    return this.jsonResponse({ ok: true, data: estimates });
   }
 
   private async handleStatus(): Promise<Response> {
